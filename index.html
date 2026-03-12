@@ -221,6 +221,8 @@ if (window.Telegram?.WebApp) { Telegram.WebApp.ready(); Telegram.WebApp.expand()
 const API_URL   = 'https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/';
 const CACHE_KEY = 'carburants_v6';
 const CACHE_TTL = 24 * 3600 * 1000;
+const POS_KEY   = 'carburants_pos';
+const POS_TTL   = 30 * 60 * 1000;   // 30 min: posició en caché per obrir ràpid
 
 const PRICE_KEYS = [
   { key: 'Gasoil A', field: 'Precio Gasoleo A' },
@@ -533,11 +535,64 @@ function renderStations() {
   document.getElementById('info-count').textContent = _nearest.length;
 }
 
+// ── Caché de posició ──────────────────────────────────────────────────────────
+function getCachedPos() {
+  try {
+    const raw = localStorage.getItem(POS_KEY);
+    if (!raw) return null;
+    const { lat, lon, ts } = JSON.parse(raw);
+    return Date.now() - ts > POS_TTL ? null : { lat, lon };
+  } catch { return null; }
+}
+function setCachedPos(lat, lon) {
+  try { localStorage.setItem(POS_KEY, JSON.stringify({ lat, lon, ts: Date.now() })); } catch {}
+}
+
 // ── Geolocation ───────────────────────────────────────────────────────────────
-const getLocation = () => new Promise((res, rej) => {
-  if (!navigator.geolocation) { rej(new Error('Sense GPS')); return; }
-  navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
-});
+// Intenta usar Telegram LocationManager (permís persistent entre sessions).
+// Si no està disponible, usa navigator.geolocation com a fallback.
+
+function _telegramLocation() {
+  return new Promise((resolve, reject) => {
+    const lm = window.Telegram?.WebApp?.LocationManager;
+    if (!lm) { reject(new Error('no lm')); return; }
+    const timer = setTimeout(() => reject(new Error('timeout')), 12000);
+    lm.init(() => {
+      if (!lm.isLocationAvailable) {
+        clearTimeout(timer); reject(new Error('unavailable')); return;
+      }
+      lm.getLocation(loc => {
+        clearTimeout(timer);
+        if (loc) resolve({ lat: loc.latitude, lon: loc.longitude });
+        else reject(new Error('no loc'));
+      });
+    });
+  });
+}
+
+function _browserLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) { reject(new Error('Sense GPS')); return; }
+    navigator.geolocation.getCurrentPosition(
+      p => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
+      reject,
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
+    );
+  });
+}
+
+async function getLocation() {
+  // 1. Telegram LocationManager (permís persistent — no torna a preguntar)
+  try {
+    const pos = await _telegramLocation();
+    setCachedPos(pos.lat, pos.lon);
+    return pos;
+  } catch {}
+  // 2. Fallback: API estàndard del navegador
+  const pos = await _browserLocation();
+  setCachedPos(pos.lat, pos.lon);
+  return pos;
+}
 
 // ── Fetch ─────────────────────────────────────────────────────────────────────
 async function fetchStations() {
@@ -562,16 +617,29 @@ async function init() {
   document.getElementById('controlbar').style.display = 'none';
   setProg(0);
 
-  // 1. Posició
-  setMsg('Obtenint la teva posició...');
-  try {
-    const pos = await getLocation();
-    _userLat = pos.coords.latitude; _userLon = pos.coords.longitude; setProg(10);
-  } catch (e) {
-    showError(e.code === 1
-      ? 'Cal permetre l\'accés a la ubicació. Activa els permisos al dispositiu.'
-      : 'No s\'ha pogut obtenir la posició. Comprova que tens el GPS actiu.');
-    return;
+  // 1. Posició — si hi ha caché recent, la usem immediatament (sense espera ni permís)
+  const cached_pos = getCachedPos();
+  if (cached_pos) {
+    _userLat = cached_pos.lat; _userLon = cached_pos.lon;
+    setProg(10);
+    // Actualitzem la posició en segon pla (sense bloquejar la càrrega)
+    getLocation().then(p => {
+      if (Math.abs(p.lat - _userLat) > 0.001 || Math.abs(p.lon - _userLon) > 0.001) {
+        _userLat = p.lat; _userLon = p.lon;
+        if (_map) { updateRadiusCircle(); renderStations(); }
+      }
+    }).catch(() => {});
+  } else {
+    setMsg('Obtenint la teva posició...');
+    try {
+      const pos = await getLocation();
+      _userLat = pos.lat; _userLon = pos.lon; setProg(10);
+    } catch (e) {
+      showError(e.code === 1
+        ? 'Cal permetre l\'accés a la ubicació. Activa els permisos al dispositiu i torna-ho a intentar.'
+        : 'No s\'ha pogut obtenir la posició. Comprova que tens el GPS actiu.');
+      return;
+    }
   }
 
   // 2. Dades API
