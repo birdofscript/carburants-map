@@ -111,6 +111,7 @@
     .mk-orange { background: #f0883e; }
     .mk-red    { background: #da3633; }
     .mk-grey   { background: #6e7681; }
+    .mk-best   { background: #9b30ff; border-color: #fff !important; box-shadow: 0 0 0 3px #9b30ff, 0 3px 10px rgba(155,48,255,0.6); }
 
     /* ── User dot ───────────────────────────────────────── */
     .user-dot {
@@ -190,7 +191,7 @@
 </div>
 
 <div id="infobar">
-  <div>⛽ <b id="info-count">10</b> gasolineres · <span id="info-date"></span></div>
+  <div>⛽ <b id="info-count">—</b> gasolineres en 10 km · <span id="info-date"></span></div>
   <button id="btn-refresh" onclick="forceRefresh()">🔄 Actualitzar</button>
 </div>
 
@@ -207,9 +208,9 @@ if (window.Telegram?.WebApp) {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const API_URL   = 'https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/';
-const CACHE_KEY = 'carburants_v3';
-const CACHE_TTL = 24 * 3600 * 1000;
-const NUM_NEAR  = 10;
+const CACHE_KEY  = 'carburants_v3';
+const CACHE_TTL  = 24 * 3600 * 1000;
+const RADIUS_KM  = 10;
 
 // Ordre de prioritat dels carburants al popup
 const PRICE_KEYS = [
@@ -307,28 +308,31 @@ function priceColorClass(key, val) {
 }
 
 function markerColorClass(st) {
-  const v = st.prices['Gasoil A'] ?? st.prices['95 E5'];
+  const v = st.prices['95 E5'] ?? st.prices['95 E5+'];
   if (!v) return 'mk-grey';
-  const ref = st.prices['Gasoil A'] ? v : v + 0.1;
-  if (ref < 1.45) return 'mk-green';
-  if (ref < 1.65) return 'mk-yellow';
-  if (ref < 1.85) return 'mk-orange';
+  if (v < 1.55) return 'mk-green';
+  if (v < 1.75) return 'mk-yellow';
+  if (v < 1.95) return 'mk-orange';
   return 'mk-red';
 }
 
 // ── Leaflet icons ─────────────────────────────────────────────────────────────
-function makeMarkerIcon(st, rank) {
+function makeMarkerIcon(st, rank, isBest) {
+  const cls  = isBest ? 'mk-best' : markerColorClass(st);
+  const icon = isBest ? '⭐' : rank;
+  const size = isBest ? 36 : 30;
   return L.divIcon({
-    html: `<div class="fmk ${markerColorClass(st)}"><div class="fmk-n">${rank}</div></div>`,
+    html: `<div class="fmk ${cls}" style="width:${size}px;height:${size}px"><div class="fmk-n">${icon}</div></div>`,
     className: '',
-    iconSize:   [30, 30],
-    iconAnchor: [15, 30],
-    popupAnchor:[0, -34],
+    iconSize:   [size, size],
+    iconAnchor: [size/2, size],
+    popupAnchor:[0, -(size + 4)],
+    zIndexOffset: isBest ? 500 : 0,
   });
 }
 
 // ── Popup ────────────────────────────────────────────────────────────────────
-function makePopup(st, dist) {
+function makePopup(st, dist, isBest = false) {
   const wazeUrl  = `https://waze.com/ul?ll=${st.lat},${st.lon}&navigate=yes`;
   const gmapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${st.lat},${st.lon}`;
 
@@ -354,9 +358,13 @@ function makePopup(st, dist) {
 
   const addr = [st.address, st.locality].filter(Boolean).join(', ');
 
+  const bestBadge = isBest
+    ? `<div style="display:inline-block;background:#9b30ff;color:#fff;border-radius:6px;padding:2px 9px;font-size:0.7rem;font-weight:700;margin-bottom:7px">⭐ Més barata de la zona</div><br>`
+    : '';
+
   return `<div class="pp-brand">⛽ ${st.brand}</div>
 <div class="pp-addr">${addr}</div>
-<div class="pp-dist">📍 ${fmtDist(dist)}</div>
+${bestBadge}<div class="pp-dist">📍 ${fmtDist(dist)}</div>
 <div class="pp-prices ${gridClass}">${pricesHtml}</div>
 ${schedHtml}
 <div class="pp-btns">
@@ -465,14 +473,19 @@ async function init() {
     return;
   }
 
-  // 3. 10 gasolineres més properes
+  // 3. Gasolineres dins de RADIUS_KM km, ordenades per distància
   setMsg('Calculant les gasolineres més properes...');
   setProg(92);
 
   const nearest = cache.data
     .map(s => ({ ...s, dist: haversine(userLat, userLon, s.lat, s.lon) }))
-    .sort((a, b) => a.dist - b.dist)
-    .slice(0, NUM_NEAR);
+    .filter(s => s.dist <= RADIUS_KM)
+    .sort((a, b) => a.dist - b.dist);
+
+  if (!nearest.length) {
+    showError(`No s'ha trobat cap gasolinera en un radi de ${RADIUS_KM} km. Pot ser que estiguis en una zona molt aïllada o que les dades del Ministeri no cobreixin aquesta àrea.`);
+    return;
+  }
 
   // 4. Construir mapa
   setProg(100);
@@ -500,11 +513,22 @@ async function init() {
     zIndexOffset: 1000,
   }).addTo(_map).bindPopup('<b>La teva posició</b>');
 
+  // Gasolinera més barata (per preu 95 E5)
+  const withPrice = nearest.filter(s => s.prices['95 E5'] ?? s.prices['95 E5+']);
+  const bestId = withPrice.length
+    ? withPrice.reduce((a, b) =>
+        (a.prices['95 E5'] ?? a.prices['95 E5+']) <= (b.prices['95 E5'] ?? b.prices['95 E5+']) ? a : b
+      ).id
+    : null;
+
   // Marcadors gasolineres
   nearest.forEach((st, i) => {
-    L.marker([st.lat, st.lon], { icon: makeMarkerIcon(st, i + 1) })
-      .addTo(_map)
-      .bindPopup(makePopup(st, st.dist), { maxWidth: 270 });
+    const isBest = st.id === bestId;
+    const marker = L.marker([st.lat, st.lon], {
+      icon: makeMarkerIcon(st, i + 1, isBest),
+      zIndexOffset: isBest ? 500 : 0,
+    });
+    marker.addTo(_map).bindPopup(makePopup(st, st.dist, isBest), { maxWidth: 270 });
   });
 
   // Ajustar zoom per mostrar tot
