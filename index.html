@@ -191,7 +191,7 @@
 </div>
 
 <div id="infobar">
-  <div>⛽ <b id="info-count">—</b> gasolineres en 10 km · <span id="info-date"></span></div>
+  <div>⛽ <b id="info-count">—</b> més barates en 10 km · <span id="info-date"></span></div>
   <button id="btn-refresh" onclick="forceRefresh()">🔄 Actualitzar</button>
 </div>
 
@@ -208,7 +208,7 @@ if (window.Telegram?.WebApp) {
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const API_URL   = 'https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/';
-const CACHE_KEY  = 'carburants_v3';
+const CACHE_KEY  = 'carburants_v5';
 const CACHE_TTL  = 24 * 3600 * 1000;
 const RADIUS_KM  = 10;
 
@@ -245,6 +245,89 @@ function setCache(data) {
   }
 }
 
+// ── Traducció castellà → català ───────────────────────────────────────────────
+const _ADDR_MAP = [
+  [/\bCALLE\b/g,         'CARRER'],
+  [/\bCALLEJÓN\b/g,      'CARRERÓ'],
+  [/\bCALLEJON\b/g,      'CARRERÓ'],
+  [/\bAVENIDA\b/g,       'AVINGUDA'],
+  [/\bAVDA\.?\b/g,       'AVDA.'],
+  [/\bPLAZA\b/g,         'PLAÇA'],
+  [/\bPZA\.?\b/g,        'PLAÇA'],
+  [/\bPASEO\b/g,         'PASSEIG'],
+  [/\bPSEO\.?\b/g,       'PASSEIG'],
+  [/\bCAMINO\b/g,        'CAMÍ'],
+  [/\bCARRETERA\b/g,     'CARRETERA'],
+  [/\bCTRA\.?\b/g,       'CTRA.'],
+  [/\bPOLÍGONO\b/g,      'POLÍGON'],
+  [/\bPOLIGONO\b/g,      'POLÍGON'],
+  [/\bURBANIZACIÓN\b/g,  'URBANITZACIÓ'],
+  [/\bURBANIZACION\b/g,  'URBANITZACIÓ'],
+  [/\bBARRIO\b/g,        'BARRI'],
+  [/\bTRAVESÍA\b/g,      'TRAVESSERA'],
+  [/\bTRAVESIA\b/g,      'TRAVESSERA'],
+  [/\bGLORIETA\b/g,      'GLORIETA'],
+  [/\bPASAJE\b/g,        'PASSATGE'],
+  [/\bRONDA\b/g,         'RONDA'],
+  [/\bVÍA\b/g,           'VIA'],
+  [/\bPARQUE\b/g,        'PARC'],
+  [/\bJARDINES?\b/g,     'JARDINS'],
+  [/\bMERCADO\b/g,       'MERCAT'],
+  [/\bMUELLE\b/g,        'MOLL'],
+  [/\bPUERTO\b/g,        'PORT'],
+  [/\bAUTOPISTA\b/g,     'AUTOPISTA'],
+  [/\bAUTOVÍA\b/g,       'AUTOVIA'],
+  [/\bAUTOVIA\b/g,       'AUTOVIA'],
+];
+
+// Dies de la setmana: ordre important (D abans de DL, DM... per evitar doble-reemplaç)
+const _SCHED_DAYS = [
+  [/\bDOMINGO\b/gi,   'Dg'], [/\bLUNES\b/gi,      'Dl'],
+  [/\bMARTES\b/gi,    'Dm'], [/\bMIÉRCOLES\b/gi,  'Dc'],
+  [/\bMIERCOLES\b/gi, 'Dc'], [/\bJUEVES\b/gi,     'Dj'],
+  [/\bVIERNES\b/gi,   'Dv'], [/\bSÁBADO\b/gi,     'Ds'],
+  [/\bSABADO\b/gi,    'Ds'],
+  // Abreviatures d'1 lletra (han d'anar al final per no interferir)
+  [/(?<=[;,\s\-–]|^)D(?=[\-–:,\s]|$)/g, 'Dg'],
+  [/(?<=[;,\s\-–]|^)L(?=[\-–:,\s]|$)/g, 'Dl'],
+  [/(?<=[;,\s\-–]|^)M(?=[\-–:,\s]|$)/g, 'Dm'],
+  [/(?<=[;,\s\-–]|^)X(?=[\-–:,\s]|$)/g, 'Dc'],
+  [/(?<=[;,\s\-–]|^)J(?=[\-–:,\s]|$)/g, 'Dj'],
+  [/(?<=[;,\s\-–]|^)V(?=[\-–:,\s]|$)/g, 'Dv'],
+  [/(?<=[;,\s\-–]|^)S(?=[\-–:,\s]|$)/g, 'Ds'],
+];
+
+const _SCHED_WORDS = [
+  [/\bFESTIVOS\b/gi,  'FESTIUS'],
+  [/\bFESTIVO\b/gi,   'FESTIU'],
+  [/\bCERRADO\b/gi,   'TANCAT'],
+  [/\bABIERTO\b/gi,   'OBERT'],
+  [/\b24\s*HORAS\b/gi,'24H'],
+  [/\bDIAS?\b/gi,     'DIES'],
+  [/\bDE\b/gi,        'DE'],    // invariable
+  [/\bA\b/gi,         'A'],     // invariable
+  [/\bHORARIO\b/gi,   'HORARI'],
+  [/\bCONTINUO\b/gi,  'CONTINU'],
+];
+
+function catAddr(s) {
+  if (!s) return s;
+  let r = s.toUpperCase();
+  for (const [re, rep] of _ADDR_MAP) r = r.replace(re, rep);
+  r = r.replace(/Ñ/g, 'NY');
+  // Title-case: primera lletra de cada paraula
+  return r.replace(/\b([A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞŸ])([A-ZÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞŸ]+)\b/g,
+    (_, a, b) => a + b.toLowerCase());
+}
+
+function catSched(s) {
+  if (!s) return s;
+  let r = s.toUpperCase();
+  for (const [re, rep] of _SCHED_WORDS) r = r.replace(re, rep);
+  for (const [re, rep] of _SCHED_DAYS)  r = r.replace(re, rep);
+  return r;
+}
+
 // ── Parse ────────────────────────────────────────────────────────────────────
 function toF(s) {
   if (!s || s.trim() === '') return null;
@@ -266,10 +349,10 @@ function parseStation(raw) {
   return {
     id:       raw['IDEESS'] || '',
     brand:    (raw['Rótulo'] || '').trim() || '—',
-    address:  (raw['Dirección'] || '').trim(),
+    address:  catAddr((raw['Dirección'] || '').trim()),
     locality: (raw['Localidad'] || '').trim(),
     province: (raw['Provincia'] || '').trim(),
-    schedule: (raw['Horario'] || '').trim(),
+    schedule: catSched((raw['Horario'] || '').trim()),
     lat, lon,
     prices,
   };
@@ -480,7 +563,12 @@ async function init() {
   const nearest = cache.data
     .map(s => ({ ...s, dist: haversine(userLat, userLon, s.lat, s.lon) }))
     .filter(s => s.dist <= RADIUS_KM)
-    .sort((a, b) => a.dist - b.dist);
+    .sort((a, b) => {
+      const pa = a.prices['95 E5'] ?? a.prices['95 E5+'] ?? Infinity;
+      const pb = b.prices['95 E5'] ?? b.prices['95 E5+'] ?? Infinity;
+      return pa !== pb ? pa - pb : a.dist - b.dist;  // empat: la més propera primer
+    })
+    .slice(0, 10);
 
   if (!nearest.length) {
     showError(`No s'ha trobat cap gasolinera en un radi de ${RADIUS_KM} km. Pot ser que estiguis en una zona molt aïllada o que les dades del Ministeri no cobreixin aquesta àrea.`);
