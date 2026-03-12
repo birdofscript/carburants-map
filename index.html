@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="ca">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>⛽ Carburants propers</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1c2128;
+      color: #e6edf3;
+      overflow: hidden;
+    }
+
+    /* ── Loading ────────────────────────────────────────── */
+    #loading {
+      position: fixed; inset: 0;
+      background: #1c2128;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 9999; gap: 14px;
+    }
+
+    #loading h2 { font-size: 1.3rem; color: #e6edf3; }
+
+    #loading-msg {
+      font-size: 0.85rem; color: #8b949e;
+      text-align: center; max-width: 280px;
+    }
+
+    .spinner {
+      width: 44px; height: 44px;
+      border: 4px solid #30363d;
+      border-top-color: #f0883e;
+      border-radius: 50%;
+      animation: spin 0.75s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #progress-bar {
+      width: 220px; height: 4px;
+      background: #30363d; border-radius: 2px; overflow: hidden;
+    }
+    #progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #f0883e, #ffa657);
+      width: 0%; transition: width 0.4s ease;
+      border-radius: 2px;
+    }
+
+    /* ── Error ──────────────────────────────────────────── */
+    #error-screen {
+      position: fixed; inset: 0;
+      background: #1c2128;
+      display: none; flex-direction: column;
+      align-items: center; justify-content: center;
+      z-index: 9999; gap: 12px; padding: 28px;
+      text-align: center;
+    }
+    #error-screen h2 { color: #f85149; font-size: 1.15rem; }
+    #error-msg { color: #8b949e; font-size: 0.85rem; max-width: 300px; line-height: 1.5; }
+    .btn-retry {
+      background: #f0883e; color: white;
+      border: none; padding: 10px 28px;
+      border-radius: 8px; font-size: 0.9rem;
+      font-weight: 600; cursor: pointer; margin-top: 8px;
+    }
+
+    /* ── Map ────────────────────────────────────────────── */
+    #map { height: 100vh; width: 100%; }
+
+    /* ── Info bar ───────────────────────────────────────── */
+    #infobar {
+      position: fixed; top: 0; left: 0; right: 0;
+      background: rgba(22, 27, 34, 0.92);
+      backdrop-filter: blur(10px);
+      padding: 6px 12px;
+      font-size: 0.73rem; color: #8b949e;
+      z-index: 1000;
+      display: none; justify-content: space-between; align-items: center;
+      border-bottom: 1px solid #30363d;
+    }
+    #infobar b { color: #e6edf3; }
+    #btn-refresh {
+      background: none; border: 1px solid #30363d;
+      color: #8b949e; padding: 3px 9px;
+      border-radius: 6px; font-size: 0.7rem; cursor: pointer;
+    }
+    #btn-refresh:active { background: #30363d; }
+
+    /* ── Fuel marker ────────────────────────────────────── */
+    .fmk {
+      width: 30px; height: 30px;
+      border-radius: 50% 50% 50% 0;
+      transform: rotate(-45deg);
+      border: 2px solid rgba(255,255,255,0.75);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.45);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .fmk-n {
+      transform: rotate(45deg);
+      font-size: 10px; font-weight: 800; color: white;
+      text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+    }
+    .mk-green  { background: #2da44e; }
+    .mk-yellow { background: #d29922; }
+    .mk-orange { background: #f0883e; }
+    .mk-red    { background: #da3633; }
+    .mk-grey   { background: #6e7681; }
+
+    /* ── User dot ───────────────────────────────────────── */
+    .user-dot {
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #1f6feb; border: 3px solid white;
+      box-shadow: 0 0 0 4px rgba(31,111,235,0.3);
+      animation: pulse-u 2s ease-out infinite;
+    }
+    @keyframes pulse-u {
+      0%   { box-shadow: 0 0 0 0 rgba(31,111,235,0.45); }
+      70%  { box-shadow: 0 0 0 9px rgba(31,111,235,0); }
+      100% { box-shadow: 0 0 0 0 rgba(31,111,235,0); }
+    }
+
+    /* ── Popup ──────────────────────────────────────────── */
+    .leaflet-popup-content-wrapper {
+      background: #161b22 !important;
+      color: #e6edf3 !important;
+      border: 1px solid #30363d !important;
+      border-radius: 12px !important;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.65) !important;
+    }
+    .leaflet-popup-tip { background: #161b22 !important; }
+    .leaflet-popup-close-button { color: #8b949e !important; }
+    .leaflet-popup-content { margin: 13px 15px !important; min-width: 210px; }
+
+    .pp-brand { font-size: 1rem; font-weight: 700; color: #e6edf3; margin-bottom: 3px; }
+    .pp-addr  { font-size: 0.73rem; color: #8b949e; margin-bottom: 8px; line-height: 1.4; }
+    .pp-dist  {
+      display: inline-block; background: #21262d;
+      border-radius: 6px; padding: 2px 9px;
+      font-size: 0.71rem; color: #79c0ff; margin-bottom: 9px;
+    }
+    .pp-prices {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 4px; margin-bottom: 9px;
+    }
+    .pp-prices.cols-1 { grid-template-columns: 1fr; }
+    .pp-pi {
+      background: #21262d; border-radius: 7px; padding: 5px 8px;
+    }
+    .pp-plabel { font-size: 0.62rem; color: #8b949e; display: block; margin-bottom: 1px; }
+    .pp-pval   { font-size: 0.93rem; font-weight: 700; }
+    .p-na  { color: #6e7681; }
+    .p-gr  { color: #56d364; }
+    .p-ye  { color: #e3b341; }
+    .p-or  { color: #f0883e; }
+    .p-re  { color: #f85149; }
+
+    .pp-sched { font-size: 0.71rem; color: #8b949e; margin-bottom: 9px; }
+    .pp-btns  { display: flex; gap: 6px; }
+    .pp-btn {
+      flex: 1; padding: 8px; border-radius: 8px;
+      text-align: center; font-size: 0.8rem; font-weight: 600;
+      text-decoration: none; display: block;
+      background: #21262d; border: 1px solid #30363d;
+    }
+    .pp-btn-waze  { color: #79c0ff; }
+    .pp-btn-gmaps { color: #7ee787; }
+  </style>
+</head>
+<body>
+
+<div id="loading">
+  <div style="font-size:2.8rem; margin-bottom:4px">⛽</div>
+  <h2>Carburants propers</h2>
+  <div class="spinner"></div>
+  <div id="loading-msg">Obtenint la teva posició...</div>
+  <div id="progress-bar"><div id="progress-fill"></div></div>
+</div>
+
+<div id="error-screen">
+  <div style="font-size:2.5rem">😕</div>
+  <h2>No s'ha pogut carregar</h2>
+  <p id="error-msg">S'ha produït un error inesperat.</p>
+  <button class="btn-retry" onclick="init()">Tornar a intentar</button>
+</div>
+
+<div id="infobar">
+  <div>⛽ <b id="info-count">10</b> gasolineres · <span id="info-date"></span></div>
+  <button id="btn-refresh" onclick="forceRefresh()">🔄 Actualitzar</button>
+</div>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+// ── Telegram WebApp ──────────────────────────────────────────────────────────
+if (window.Telegram?.WebApp) {
+  Telegram.WebApp.ready();
+  Telegram.WebApp.expand();
+}
+
+// ── Constants ────────────────────────────────────────────────────────────────
+const API_URL   = 'https://sedeaplicaciones.minetur.gob.es/ServiciosRESTCarburantes/PreciosCarburantes/EstacionesTerrestres/';
+const CACHE_KEY = 'carburants_v3';
+const CACHE_TTL = 24 * 3600 * 1000;
+const NUM_NEAR  = 10;
+
+// Ordre de prioritat dels carburants al popup
+const PRICE_KEYS = [
+  { key: 'Gasoil A',     field: 'Precio Gasoleo A' },
+  { key: 'Gasoil+',      field: 'Precio Gasoleo Premium' },
+  { key: '95 E5',        field: 'Precio Gasolina 95 E5' },
+  { key: '95 E5+',       field: 'Precio Gasolina 95 E5 Premium' },
+  { key: '98 E5',        field: 'Precio Gasolina 98 E5' },
+  { key: '98 E5+',       field: 'Precio Gasolina 98 E5 Premium' },
+  { key: 'GLP',          field: 'Precio Gases licuados del petróleo' },
+  { key: 'GNC',          field: 'Precio Gas Natural Comprimido' },
+  { key: 'GNL',          field: 'Precio Gas Natural Licuado' },
+  { key: 'H₂',           field: 'Precio Hidrogeno' },
+];
+
+// ── Cache localStorage ───────────────────────────────────────────────────────
+function getCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const { ts, data } = JSON.parse(raw);
+    if (Date.now() - ts > CACHE_TTL) return null;
+    return { data, ts };
+  } catch { return null; }
+}
+
+function setCache(data) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), data }));
+  } catch(e) {
+    // localStorage pot estar ple; ignora
+  }
+}
+
+// ── Parse ────────────────────────────────────────────────────────────────────
+function toF(s) {
+  if (!s || s.trim() === '') return null;
+  const v = parseFloat(s.replace(',', '.'));
+  return isNaN(v) || v <= 0 ? null : v;
+}
+
+function parseStation(raw) {
+  const lat = toF(raw['Latitud']);
+  const lon = toF(raw['Longitud (WGS84)']);
+  if (!lat || !lon) return null;
+
+  const prices = {};
+  for (const { key, field } of PRICE_KEYS) {
+    const v = toF(raw[field]);
+    if (v) prices[key] = v;
+  }
+
+  return {
+    id:       raw['IDEESS'] || '',
+    brand:    (raw['Rótulo'] || '').trim() || '—',
+    address:  (raw['Dirección'] || '').trim(),
+    locality: (raw['Localidad'] || '').trim(),
+    province: (raw['Provincia'] || '').trim(),
+    schedule: (raw['Horario'] || '').trim(),
+    lat, lon,
+    prices,
+  };
+}
+
+// ── Distance ─────────────────────────────────────────────────────────────────
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2
+    + Math.cos(lat1 * Math.PI/180) * Math.cos(lat2 * Math.PI/180) * Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function fmtDist(km) {
+  return km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
+}
+
+// ── Colors ───────────────────────────────────────────────────────────────────
+function priceColorClass(key, val) {
+  if (!val) return 'p-na';
+  if (key === 'Gasoil A' || key === 'Gasoil+') {
+    if (val < 1.45) return 'p-gr';
+    if (val < 1.65) return 'p-ye';
+    if (val < 1.85) return 'p-or';
+    return 'p-re';
+  }
+  if (key.startsWith('95') || key.startsWith('98')) {
+    if (val < 1.55) return 'p-gr';
+    if (val < 1.75) return 'p-ye';
+    if (val < 1.95) return 'p-or';
+    return 'p-re';
+  }
+  return 'p-ye';
+}
+
+function markerColorClass(st) {
+  const v = st.prices['Gasoil A'] ?? st.prices['95 E5'];
+  if (!v) return 'mk-grey';
+  const ref = st.prices['Gasoil A'] ? v : v + 0.1;
+  if (ref < 1.45) return 'mk-green';
+  if (ref < 1.65) return 'mk-yellow';
+  if (ref < 1.85) return 'mk-orange';
+  return 'mk-red';
+}
+
+// ── Leaflet icons ─────────────────────────────────────────────────────────────
+function makeMarkerIcon(st, rank) {
+  return L.divIcon({
+    html: `<div class="fmk ${markerColorClass(st)}"><div class="fmk-n">${rank}</div></div>`,
+    className: '',
+    iconSize:   [30, 30],
+    iconAnchor: [15, 30],
+    popupAnchor:[0, -34],
+  });
+}
+
+// ── Popup ────────────────────────────────────────────────────────────────────
+function makePopup(st, dist) {
+  const wazeUrl  = `https://waze.com/ul?ll=${st.lat},${st.lon}&navigate=yes`;
+  const gmapsUrl = `https://www.google.com/maps/dir/?api=1&destination=${st.lat},${st.lon}`;
+
+  const activePrices = PRICE_KEYS.filter(({ key }) => st.prices[key]);
+  const gridClass = activePrices.length === 1 ? 'cols-1' : '';
+
+  let pricesHtml = activePrices.map(({ key }) => {
+    const val = st.prices[key];
+    const cls = priceColorClass(key, val);
+    return `<div class="pp-pi">
+      <span class="pp-plabel">${key}</span>
+      <span class="pp-pval ${cls}">${val.toFixed(3)} €</span>
+    </div>`;
+  }).join('');
+
+  if (!pricesHtml) {
+    pricesHtml = '<div style="color:#6e7681;font-size:0.8rem;padding:4px 0">Preus no disponibles</div>';
+  }
+
+  const schedHtml = st.schedule
+    ? `<div class="pp-sched">🕐 ${st.schedule}</div>`
+    : '';
+
+  const addr = [st.address, st.locality].filter(Boolean).join(', ');
+
+  return `<div class="pp-brand">⛽ ${st.brand}</div>
+<div class="pp-addr">${addr}</div>
+<div class="pp-dist">📍 ${fmtDist(dist)}</div>
+<div class="pp-prices ${gridClass}">${pricesHtml}</div>
+${schedHtml}
+<div class="pp-btns">
+  <a href="${wazeUrl}" target="_blank" class="pp-btn pp-btn-waze">🚗 Waze</a>
+  <a href="${gmapsUrl}" target="_blank" class="pp-btn pp-btn-gmaps">🗺 Maps</a>
+</div>`;
+}
+
+// ── UI helpers ───────────────────────────────────────────────────────────────
+function setMsg(t)  { document.getElementById('loading-msg').textContent = t; }
+function setProg(p) { document.getElementById('progress-fill').style.width = p + '%'; }
+
+function showError(msg) {
+  document.getElementById('loading').style.display = 'none';
+  const el = document.getElementById('error-screen');
+  el.style.display = 'flex';
+  document.getElementById('error-msg').textContent = msg;
+}
+
+function showMap() {
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('error-screen').style.display = 'none';
+  document.getElementById('infobar').style.display = 'flex';
+}
+
+// ── Geolocation ───────────────────────────────────────────────────────────────
+function getLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('El teu dispositiu no suporta geolocalització.'));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(resolve, reject, {
+      enableHighAccuracy: true,
+      timeout: 15000,
+      maximumAge: 60000,
+    });
+  });
+}
+
+// ── Fetch stations ────────────────────────────────────────────────────────────
+async function fetchStations() {
+  const cached = getCache();
+  if (cached) {
+    setMsg('Usant dades en caché (actualització diària)...');
+    setProg(80);
+    return cached;
+  }
+
+  setMsg('Descarregant preus del Ministeri...');
+  setProg(15);
+
+  const resp = await fetch(API_URL, {
+    headers: { 'Accept': 'application/json' },
+  });
+  if (!resp.ok) throw new Error(`Error del servidor: HTTP ${resp.status}`);
+  setProg(60);
+
+  const json = await resp.json();
+  setProg(80);
+
+  const stations = (json.ListaEESSPrecio || [])
+    .map(parseStation)
+    .filter(Boolean);
+
+  if (!stations.length) throw new Error('Resposta de l\'API buida o inesperada.');
+
+  setCache(stations);
+  return { data: stations, ts: Date.now() };
+}
+
+// ── Map state ─────────────────────────────────────────────────────────────────
+let _map = null;
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+async function init() {
+  document.getElementById('error-screen').style.display = 'none';
+  document.getElementById('loading').style.display = 'flex';
+  document.getElementById('infobar').style.display = 'none';
+  setProg(0);
+
+  // 1. Posició de l'usuari
+  setMsg('Obtenint la teva posició...');
+  let userLat, userLon;
+  try {
+    const pos = await getLocation();
+    userLat = pos.coords.latitude;
+    userLon = pos.coords.longitude;
+    setProg(10);
+  } catch (e) {
+    const isPermission = e.code === 1;
+    showError(
+      isPermission
+        ? 'Cal permetre l\'accés a la ubicació. Activa els permisos de localització al teu dispositiu i torna-ho a intentar.'
+        : 'No s\'ha pogut obtenir la teva posició. Assegura\'t de tenir el GPS activat i torna-ho a intentar.'
+    );
+    return;
+  }
+
+  // 2. Dades gasolineres
+  let cache;
+  try {
+    cache = await fetchStations();
+  } catch (e) {
+    showError(`No s'han pogut obtenir les dades de gasolineres. Comprova la connexió i torna-ho a intentar.\n\n(${e.message})`);
+    return;
+  }
+
+  // 3. 10 gasolineres més properes
+  setMsg('Calculant les gasolineres més properes...');
+  setProg(92);
+
+  const nearest = cache.data
+    .map(s => ({ ...s, dist: haversine(userLat, userLon, s.lat, s.lon) }))
+    .sort((a, b) => a.dist - b.dist)
+    .slice(0, NUM_NEAR);
+
+  // 4. Construir mapa
+  setProg(100);
+  setMsg('Carregant el mapa...');
+
+  if (_map) { _map.remove(); _map = null; }
+
+  _map = L.map('map', {
+    center: [userLat, userLon],
+    zoom: 14,
+    zoomControl: true,
+  });
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '© <a href="https://openstreetmap.org">OpenStreetMap</a> · © <a href="https://carto.com">CARTO</a>',
+    maxZoom: 19,
+  }).addTo(_map);
+
+  // Marcador posició usuari
+  L.marker([userLat, userLon], {
+    icon: L.divIcon({
+      html: '<div class="user-dot"></div>',
+      className: '', iconSize: [16, 16], iconAnchor: [8, 8],
+    }),
+    zIndexOffset: 1000,
+  }).addTo(_map).bindPopup('<b>La teva posició</b>');
+
+  // Marcadors gasolineres
+  nearest.forEach((st, i) => {
+    L.marker([st.lat, st.lon], { icon: makeMarkerIcon(st, i + 1) })
+      .addTo(_map)
+      .bindPopup(makePopup(st, st.dist), { maxWidth: 270 });
+  });
+
+  // Ajustar zoom per mostrar tot
+  const bounds = L.latLngBounds([
+    [userLat, userLon],
+    ...nearest.map(s => [s.lat, s.lon]),
+  ]);
+  _map.fitBounds(bounds, { padding: [48, 48], maxZoom: 15 });
+
+  // Info bar
+  const dataStr = new Date(cache.ts).toLocaleString('ca', {
+    day: 'numeric', month: 'short',
+    hour: '2-digit', minute: '2-digit',
+  });
+  document.getElementById('info-count').textContent = nearest.length;
+  document.getElementById('info-date').textContent  = dataStr;
+
+  showMap();
+}
+
+function forceRefresh() {
+  localStorage.removeItem(CACHE_KEY);
+  init();
+}
+
+window.addEventListener('load', init);
+</script>
+</body>
+</html>
